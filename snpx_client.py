@@ -202,6 +202,11 @@ class SnpxClient:
         if connect_on_init:
             self.connect()
 
+        
+    def init_signals(self):
+        """
+        Initialize signal / memory objects. This is required every time the socket is modified
+        """
         self.di = DigitalSignal(socket=self.socket, code=0x48, address=0)
         self.do = DigitalSignal(socket=self.socket, code=0x46, address=0)
         self.ui = DigitalSignal(socket=self.socket, code=0x48, address=6000)
@@ -231,6 +236,8 @@ class SnpxClient:
         ]:
             self.socket.send(bytearray.fromhex(msg.replace(':', '')))
             self.socket.recv(1024)
+
+        self.init_signals()
 
     def disconnect(self):
         try:
