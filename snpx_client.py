@@ -134,6 +134,9 @@ class DigitalSignal:
 
         self.socket.send(bytearray(command))
 
+        # Cleanup after to remove garbage values
+        _ = SnpxClient._recv_snpx_packet(self.socket)
+
 
 class PositionData:
     def __init__(self, socket, code, address: int):
@@ -244,6 +247,38 @@ class SnpxClient:
             self.socket.close()
         except Exception as e:
             print(f"Failed to close socket listening on {self.ip}:{self.port} - {e}")
+
+
+    @staticmethod
+    def _recv_snpx_packet(sock) -> bytes:
+        """
+        Receive a complete SNPX packet from the robot.
+        SNPX packets are at least 56 bytes. 
+        Word/byte count is in header[46:48] (little endian).
+        """
+        # Step 1: always read 56-byte header
+        header = bytearray()
+        while len(header) < 56:
+            chunk = sock.recv(56 - len(header))
+            if not chunk:
+                raise ConnectionError("Socket closed before header complete")
+            header.extend(chunk)
+
+        # Step 2: extract expected payload length (little endian word count * 2 for bytes)
+        count_field = int.from_bytes(header[46:48], "little")
+        payload_len = count_field
+        if payload_len < 0:
+            payload_len = 0
+
+        # Step 3: read payload
+        payload = bytearray()
+        while len(payload) < payload_len:
+            chunk = sock.recv(payload_len - len(payload))
+            if not chunk:
+                raise ConnectionError("Socket closed before payload complete")
+            payload.extend(chunk)
+
+        return bytes(header + payload)
 
 
 BASE_MESSAGE = [
