@@ -166,12 +166,12 @@ class PositionData:
         50 4f 53 5b 47 31 3a 30 5d 20 30 2e 30
         """)
 
-        self.socket.sendall(SETASG_PACKET)
+        #self.socket.sendall(SETASG_PACKET)
 
         # Step 2: Wait for ACK
-        ack = self.socket.recv(1024)
-        if not ack:
-            raise RuntimeError("No ACK received after SETASG")
+        #ack = self.socket.recv(1024)
+        #if not ack:
+            #raise RuntimeError("No ACK received after SETASG")
 
     def read(self):
         """
@@ -227,8 +227,12 @@ class SnpxClient:
         self.uo = DigitalSignal(socket=self.socket, code=0x46, address=6000)
         self.so = DigitalSignal(socket=self.socket, code=0x46, address=7000) # SOP output
         self.si = DigitalSignal(socket=self.socket, code=0x48, address=7000) # SOP input
-        #self.cart_pos = PositionData(socket=self.socket, code=0x08, address=12000)
-        #self.j_pos = PositionData(socket=self.socket, code=0x08, address=12026)
+        self.cart_pos = PositionData(socket=self.socket, code=0x08, address=12000)
+        self.j_pos = PositionData(socket=self.socket, code=0x08, address=12026)
+        
+        # --- Set any default assignments ---
+        # Position variable
+        self.set_asg("POS[G1:0] 0.0", FanucVariable(size=50, multiply=0), 1)
 
 
     def connect(self):
@@ -295,22 +299,53 @@ class SnpxClient:
         return bytes(payload)
     
 
-    def check_if_asg_avail(self, num: int) -> bool:
+    def check_if_asg_avail(self, num: int, size: int = 1) -> bool:
         """
-        Check if an assignment number is available.
-        Returns True if the assignment number `num` is NOT present in self._sys_vars,
-        False if it is already taken.
+        Check if an assignment number range is available.
+        Returns True if the assignment number range [num, num + size - 1] is available,
+        False if any part of the range overlaps with existing variables.
+        
+        :param num: Starting assignment number to check
+        :param size: Size in words (16-bit registers) that need to be available
         """
-        # localize for speed
+        # Check if num is within valid range
+        if num < 1 or num > 80:
+            return False
+        
+        # Check if the range extends beyond valid range
+        if num + size - 1 > 80:
+            return False
+        
+        # Check for overlap with existing variables
         vals = self._sys_vars.values()
         for v in vals:
             # guard in case stored value isn't the expected dict
             try:
-                if v.get("index") == num:
+                existing_index = v.get("index")
+                existing_size = v.get("size", 1)
+                
+                # Check if the requested range overlaps with this variable's range
+                if num < existing_index + existing_size and num + size > existing_index:
                     return False
             except Exception:
                 continue
         return True
+
+    def get_next_asg_num(self, size: int = 1) -> int:
+        """
+        Get the next available assignment number that can accommodate the given size.
+        Considers the size of existing variables to find non-overlapping ranges.
+        
+        :param size: Size in words (16-bit registers) needed for the variable
+        :returns: The next available assignment number, or None if no space available
+        """
+        # Check each possible starting position
+        for start_num in range(1, 81):
+            if self.check_if_asg_avail(start_num, size):
+                return start_num
+        
+        # No available space found
+        return None
 
     def set_asg(self, var_name: str, var_type: FanucVariable, asg_num: int = None):
         """
@@ -324,15 +359,16 @@ class SnpxClient:
             return
 
         # Check assignment number
-        if asg_num == None or not self.check_if_asg_avail(asg_num):
-            for i in range(1, 81):
-                if self.check_if_asg_avail(i):
-                    asg_num = i
-                    break
+        if asg_num == None:
+            asg_num = self.get_next_asg_num(var_type.size)
+            if asg_num is None:
+                raise ValueError("No available assignment number found (all 80 slots may be occupied)")
+        elif not self.check_if_asg_avail(asg_num, var_type.size):
+            raise ValueError(f"Assignment number {asg_num} is not available for size {var_type.size}")
         
         # Verify asg number
-        if asg_num is None or asg_num > 80 or asg_num < 1:
-            raise ValueError("Assignment index out of range")
+        if asg_num < 1 or asg_num > 80:
+            raise ValueError("Assignment index out of range (must be 1-80)")
 
         command_string = f"SETASG {asg_num} {var_type.size} {var_name} {var_type.multiply}"
         
@@ -377,6 +413,8 @@ class SnpxClient:
             "index": asg_num
         }
         
+        print(self._sys_vars)
+
         # Receive Acknowledge (clear buffer)
         response = self.socket.recv(1024)
         return response
@@ -429,7 +467,7 @@ class SnpxClient:
         # 3. Send the packet and receive the response
         self.socket.send(bytearray(command))
         payload = SnpxClient._recv_snpx_packet(self.socket)
-        print_bytes_with_index(payload)
+        #print_bytes_with_index(payload)
 
         # Extract data payload
         data_start = 44

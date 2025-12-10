@@ -7,12 +7,16 @@ print("Connected")
 
 # Read robot position
 #joints = client.j_pos.read()
+#print(joints)
 
 # Write to DIs
 #client.di.write([True, True], start_index=1)
 
 #Read system variable
 #sys_var = client.read_sys_var("$AC_CRC_ACCO[1]", VariableTypes.INT)
+#sys_var2 = client.read_sys_var("$ANGTOL[1]", VariableTypes.REAL)
+#print(sys_var)
+#print(sys_var2)
 
 #Write system variable
 #client.write_sys_var("$ANGTOL[1]", VariableTypes.REAL, 1200.13)
