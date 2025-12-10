@@ -2,8 +2,19 @@ import socket
 import struct
 import time
 import math
+from enum import Enum, auto
+from dataclasses import dataclass
 
 # Packet values should be kept in hex value for debugging with Wireshark
+@dataclass
+class FanucVariable():
+    size : int # size in bytes
+    multiply : int  # multiply - typically only used for INTs
+
+class VariableTypes:
+    INT = FanucVariable(size=2, multiply=1)
+    REAL = FanucVariable(size=2, multiply=0)
+    STRING = FanucVariable(size=80, multiply=0)
 
 class DigitalSignal:
     """
@@ -135,7 +146,7 @@ class DigitalSignal:
         self.socket.send(bytearray(command))
 
         # Cleanup after to remove garbage values
-        _ = SnpxClient._recv_snpx_packet(self.socket)
+        _ = self.socket.recv(1024)
 
 
 class PositionData:
@@ -201,10 +212,10 @@ class SnpxClient:
         self.port = port
         self._snpx_seq = 0
         self.socket = None
+        self._sys_vars = {}
 
         if connect_on_init:
             self.connect()
-
         
     def init_signals(self):
         """
@@ -214,8 +225,10 @@ class SnpxClient:
         self.do = DigitalSignal(socket=self.socket, code=0x46, address=0)
         self.ui = DigitalSignal(socket=self.socket, code=0x48, address=6000)
         self.uo = DigitalSignal(socket=self.socket, code=0x46, address=6000)
-        self.cart_pos = PositionData(socket=self.socket, code=0x08, address=12000)
-        self.j_pos = PositionData(socket=self.socket, code=0x08, address=12026)
+        self.so = DigitalSignal(socket=self.socket, code=0x46, address=7000) # SOP output
+        self.si = DigitalSignal(socket=self.socket, code=0x48, address=7000) # SOP input
+        #self.cart_pos = PositionData(socket=self.socket, code=0x08, address=12000)
+        #self.j_pos = PositionData(socket=self.socket, code=0x08, address=12026)
 
 
     def connect(self):
@@ -224,6 +237,7 @@ class SnpxClient:
         """
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.socket.connect((self.ip, self.port))
+        self.socket.settimeout(5.0)
         time.sleep(0.1)
 
         # Empty initialization
@@ -248,38 +262,222 @@ class SnpxClient:
         except Exception as e:
             print(f"Failed to close socket listening on {self.ip}:{self.port} - {e}")
 
-
     @staticmethod
     def _recv_snpx_packet(sock) -> bytes:
         """
         Receive a complete SNPX packet from the robot.
         SNPX packets are at least 56 bytes. 
-        Word/byte count is in header[46:48] (little endian).
+        Max packet size is 81 bytes
         """
-        # Step 1: always read 56-byte header
-        header = bytearray()
-        while len(header) < 56:
-            chunk = sock.recv(56 - len(header))
-            if not chunk:
-                raise ConnectionError("Socket closed before header complete")
-            header.extend(chunk)
+        # read 56-byte packet
+        packet = bytearray()
+        packet = sock.recv(1024)
+        
+        # Return payload if packet length is 56
+        if len(packet) <= 56:
+            return bytes(packet)
 
-        # Step 2: extract expected payload length (little endian word count * 2 for bytes)
-        count_field = int.from_bytes(header[46:48], "little")
+        # extract payload if packet is longer
+        # packet length can be found in bytes 
+        count_field = int.from_bytes(packet[46:48], "little")
         payload_len = count_field
         if payload_len < 0:
             payload_len = 0
 
-        # Step 3: read payload
+        # read payload
         payload = bytearray()
         while len(payload) < payload_len:
             chunk = sock.recv(payload_len - len(payload))
-            if not chunk:
+            if not chunk or len(chunk) < 1:
                 raise ConnectionError("Socket closed before payload complete")
             payload.extend(chunk)
 
-        return bytes(header + payload)
+        return bytes(payload)
+    
 
+    def check_if_asg_avail(self, num: int) -> bool:
+        """
+        Check if an assignment number is available.
+        Returns True if the assignment number `num` is NOT present in self._sys_vars,
+        False if it is already taken.
+        """
+        # localize for speed
+        vals = self._sys_vars.values()
+        for v in vals:
+            # guard in case stored value isn't the expected dict
+            try:
+                if v.get("index") == num:
+                    return False
+            except Exception:
+                continue
+        return True
+
+    def set_asg(self, var_name: str, var_type: FanucVariable, asg_num: int = None):
+        """
+        Sets a variable assignment using the SETASG command.
+
+        Variables given will be assigned to the $ASG_NUM at the asg_num specified.
+        If no asg_num is given, it will find the next available num 
+        """
+        # Return if the variable has already been added
+        if self._sys_vars.get(var_name) != None:
+            return
+
+        # Check assignment number
+        if asg_num == None or not self.check_if_asg_avail(asg_num):
+            for i in range(1, 81):
+                if self.check_if_asg_avail(i):
+                    asg_num = i
+                    break
+        
+        # Verify asg number
+        if asg_num is None or asg_num > 80 or asg_num < 1:
+            raise ValueError("Assignment index out of range")
+
+        command_string = f"SETASG {asg_num} {var_type.size} {var_name} {var_type.multiply}"
+        
+        # Convert string to ASCII bytes
+        payload = command_string.encode('ascii')
+        payload_len = len(payload)
+
+        # Construct the Header (Write Request 0x03)
+        # We use the standard Write Request header structure matching your packet's intent
+        packet = bytearray([
+            0x02, 0x00, 0x03, 0x00, # 0x03 = Write Request
+            0x17, 0x00, 0x00, 0x00, # Request ID (Arbitrary, using 0x17 from your packet)
+            0x00, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 
+            0x00, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x80, 
+            0x00, 0x00, 0x00, 0x00, 0x10, 0x0e, 0x00, 0x00, 
+            0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x01, 0x01,
+            0x07, 0x38, # 0x07 = Write, 0x38 = Memory Area %G (COM) [cite: 547]
+            0x00, 0x00, # Offset (Ignored for %G)
+            0x00, 0x00, # Length Placeholder (filled below)
+        ])
+
+        # adjust for int assignments
+        if var_type == VariableTypes.INT: packet[4] = 0x1C
+
+        # Insert Payload Length at index 46-47 (Little Endian)
+        packet[54] = payload_len & 0xFF
+        packet[55] = (payload_len >> 8) & 0xFF
+
+        # Append the ASCII command
+        packet.extend(payload)
+
+        # Send
+        self.socket.sendall(packet)
+
+        # Add to dict so we don't set asg again if not needed
+        self._sys_vars[var_name] = {
+            "size" : var_type.size,
+            "multiply": var_type.multiply,
+            "index": asg_num
+        }
+        
+        # Receive Acknowledge (clear buffer)
+        response = self.socket.recv(1024)
+        return response
+
+    def read_sys_var(self, var_name: str, var_type: FanucVariable = VariableTypes.REAL):
+        """
+        Read system variable by first assigning it to an %R register, then reading the register.
+        
+        :param var_name: Name of variable, usually starts with "$"
+        :param var_type: Type of variable, must be one of VariableTypes
+        :returns: The decoded value (float, int, or str)
+        """
+
+        # 1. Make sure variable is assigned in robot (and retrieve the assignment number/type info)
+        self.set_asg(var_name=var_name, var_type=var_type)
+        
+        var_info = self._sys_vars.get(var_name)
+        if var_info is None:
+             raise Exception(f"Failed to assign variable {var_name}")
+
+        asg_num = var_info["index"]
+        size = var_info["size"] # Number of registers (words) to read
+        multiply = var_info["multiply"]
+        
+        # %R register address is 0-based word address. For %R1, the address is 0 (0x0000).
+        start_word_address = asg_num - 1
+        
+        # 2. Construct the Read Request packet
+        command = BASE_MESSAGE.copy()
+
+        # Update word count (bytes 2-3 and 30-31)
+        count = size * 2 # Number of 16-bit words (registers)
+        
+        command[2] = count & 0xFF
+        command[3] = (count >> 8) & 0xFF
+        command[30] = count & 0xFF 
+        command[31] = 0xC0 # Command code for Read/Write
+
+        # Update Read Command fields (bytes 42-47)
+        command[42] = 0x04 # Command: Read (0x04)
+        command[43] = 0x08 # Memory Area: %R (Register)
+        command[44] = start_word_address & 0xFF
+        command[45] = (start_word_address >> 8) & 0xFF
+        
+        # Length of data in bytes (size * 2 bytes/word)
+        payload_len = size #* 2 #int(size / 2)
+        command[46] = payload_len & 0xFF
+        command[47] = (payload_len >> 8) & 0xFF
+
+        # 3. Send the packet and receive the response
+        self.socket.send(bytearray(command))
+        payload = SnpxClient._recv_snpx_packet(self.socket)
+        #print_bytes_with_index(payload)
+
+        # Extract data payload
+        data_start = 44
+        data_end = data_start + (size * 2)
+        data_bytes = payload[data_start : data_end]
+        
+        if len(payload) < 4:
+             # The received data is less than expected
+             # In a real network setup, you might need to try a different offset
+             raise ValueError(f"Received only {len(data_bytes)} bytes of data for an expected {payload_len} bytes.")
+
+        # Decode the payload
+        value = None
+
+        if var_type == VariableTypes.REAL:
+            # REAL (4 bytes / 2 registers) -> 32-bit little-endian float (<f)
+            value = struct.unpack("<f", data_bytes)[0]
+        
+        elif var_type == VariableTypes.INT:
+            # INT (4 bytes / 2 registers) -> 32-bit little-endian signed integer (<i)
+            raw_value = struct.unpack("<i", data_bytes)[0]
+            # Apply scaling if the user intended it
+            if multiply != 0:
+                value = raw_value / multiply
+            else:
+                value = raw_value
+
+        elif var_type == VariableTypes.STRING:
+            # STRING (160 bytes / 80 registers) -> ASCII string
+            value = data_bytes.decode('ascii').strip('\x00')
+            
+        else:
+             raise ValueError("Unsupported or incomplete variable type/data received.")
+
+        return value
+        
+    def write_sys_var(self, var_name, var_type = FanucVariable):
+        """
+        Write a value to a system variable
+        
+        :param var_name: name of variable, usually starts with "$"
+        :param var_type: Type of variable, usually from VariableTypes
+        """
+
+        pass # TODO - WRITE SYSTEM VARS 
+
+def print_bytes_with_index(bytearr : bytes):
+    for i in range(0, len(bytearr)):
+        print(f"[{i}] - {bytearr[i]}")
 
 BASE_MESSAGE = [
     0x02, 0x00, 0x00, 0x00, 
