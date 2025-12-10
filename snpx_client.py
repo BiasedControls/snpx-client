@@ -74,12 +74,11 @@ class DigitalSignal:
         """
         
         start_index = self.address + start_index - 1
-        command = BASE_MESSAGE.copy()
+        command = BASE_MSG.copy()
 
         command[2] = count & 0xFF
         command[3] = (count >> 8) & 0xFF
         command[30] = count & 0xFF 
-        command[31] = 0xC0
         command[43] = self.code
         command[44] = start_index & 0xFF
         command[45] = (start_index >> 8) & 0xFF
@@ -98,14 +97,14 @@ class DigitalSignal:
         Write a list of boolean values to a digital signal in the robot starting at the specified index
         """
         start_index = self.address + start_index - 1
-        command = BASE_MESSAGE.copy()
+        command = BASE_MSG.copy()
 
         count = len(value)
         if count == 0:
             return
 
         if count <= 48:
-            command[9], command[17], command[31] = 0x01, 0x01, 0xC0
+            command[9], command[17] = 0x01, 0x01
         else:
             command[9], command[17], command[31] = 0x02, 0x02, 0x80
 
@@ -156,39 +155,21 @@ class PositionData:
         self.socket = socket
         self._snpx_seq = 0
 
-        # Sends a string command "SETASG". Should add a functionality for writing any command to the robot so we can clean this and the init message up
-        SETASG_PACKET = bytes.fromhex("""
-        02 00 03 00
-        19 00 00 00 00 02 00 00 00 00 00 00 00 02 00 00
-        00 00 00 00 00 00 00 00 00 00 03 80 00 00 00 00
-        10 0e 00 00 01 01 00 00 00 00 00 00 01 01 07 38
-        00 00 19 00 53 45 54 41 53 47 20 31 20 35 30 20
-        50 4f 53 5b 47 31 3a 30 5d 20 30 2e 30
-        """)
-
-        #self.socket.sendall(SETASG_PACKET)
-
-        # Step 2: Wait for ACK
-        #ack = self.socket.recv(1024)
-        #if not ack:
-            #raise RuntimeError("No ACK received after SETASG")
-
     def read(self):
         """
         Read joints from robot
         Should probably make this more dynamic / smarter
         """
 
-        READ_PACKET = bytes.fromhex("""
-        02 00 04 00
-        00 00 00 00 00 01 00 00 00 00 00 00 00 01 00 00
-        00 00 00 00 00 00 00 00 00 00 04 c0 00 00 00 00
-        10 0e 00 00 01 01 04 08 00 00 32 00 00 00 00 00
-        00 00 00 00
-        """)
+        # build packet
+        command = BASE_MSG.copy()
+        command[2] = 0x04
+        command[30] = 0x04 
+        command[43] = 0x08 # memory type code
+        command[46] = 0x32 # size in bytes
 
         # Request Joints
-        self.socket.sendall(READ_PACKET)
+        self.socket.sendall(bytearray(command))
         response = self.socket.recv(2048)
 
         # Trim response down to the joint values
@@ -376,35 +357,26 @@ class SnpxClient:
         payload = command_string.encode('ascii')
         payload_len = len(payload)
 
-        # Construct the Header (Write Request 0x03)
-        # We use the standard Write Request header structure matching your packet's intent
-        packet = bytearray([
-            0x02, 0x00, 0x03, 0x00, # 0x03 = Write Request
-            0x17, 0x00, 0x00, 0x00, # Request ID (Arbitrary, using 0x17 from your packet)
-            0x00, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 
-            0x00, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 
-            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x80, 
-            0x00, 0x00, 0x00, 0x00, 0x10, 0x0e, 0x00, 0x00, 
-            0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            0x01, 0x01,
-            0x07, 0x38, # 0x07 = Write, 0x38 = Memory Area %G (COM) [cite: 547]
-            0x00, 0x00, # Offset (Ignored for %G)
-            0x00, 0x00, # Length Placeholder (filled below)
-        ])
-
-        # adjust for int assignments
-        #if var_type == VariableTypes.INT: packet[4] = 0x1C
-        packet[4] = len(command_string)
-
-        # Insert Payload Length at index 46-47 (Little Endian)
-        packet[54] = payload_len & 0xFF
-        packet[55] = (payload_len >> 8) & 0xFF
-
-        # Append the ASCII command
-        packet.extend(payload)
+        # Build command packet
+        command = BASE_MSG.copy()
+        command[2] = 0x03
+        command[4] = len(command_string)
+        command[9] = 0x02
+        command[17] = 0x00
+        command[30] = 0x03
+        command[31] = 0x80
+        command[42] = 0x00
+        command[43] = 0x00
+        command[48] = 0x01
+        command[49] = 0x01
+        command[50] = 0x07
+        command[51] = 0x38
+        command[54] = payload_len & 0xFF
+        command[55] = (payload_len >> 8) & 0xFF
+        command.extend(payload)
 
         # Send
-        self.socket.sendall(packet)
+        self.socket.sendall(bytearray(command))
 
         # Add to dict so we don't set asg again if not needed
         self._sys_vars[var_name] = {
@@ -413,7 +385,7 @@ class SnpxClient:
             "index": asg_num
         }
         
-        print(self._sys_vars)
+        #print(self._sys_vars)
 
         # Receive Acknowledge (clear buffer)
         response = self.socket.recv(1024)
@@ -443,7 +415,7 @@ class SnpxClient:
         start_word_address = asg_num - 1
         
         # 2. Construct the Read Request packet
-        command = BASE_MESSAGE.copy()
+        command = BASE_MSG.copy()
 
         # Update word count (bytes 2-3 and 30-31)
         count = size * 2 # Number of 16-bit words (registers)
@@ -451,7 +423,6 @@ class SnpxClient:
         command[2] = count & 0xFF
         command[3] = (count >> 8) & 0xFF
         command[30] = count & 0xFF 
-        command[31] = 0xC0 # Command code for Read/Write
 
         # Update Read Command fields (bytes 42-47)
         command[42] = 0x04 # Command: Read (0x04)
@@ -528,7 +499,7 @@ class SnpxClient:
         start_word_address = asg_num - 1
         
         # 2. Construct the Read Request packet
-        command = BASE_MESSAGE.copy()
+        command = BASE_MSG.copy()
 
         # Update word count (bytes 2-3 and 30-31)
         count = size * 2 # Number of 16-bit words (registers)
@@ -536,7 +507,6 @@ class SnpxClient:
         command[2] = count & 0xFF
         command[3] = (count >> 8) & 0xFF
         command[30] = count & 0xFF 
-        command[31] = 0xC0 # Command code for Read/Write
 
         # Update Read Command fields (bytes 42-47)
         command[42] = 0x07 # Command: Read (0x04)
@@ -588,17 +558,92 @@ class SnpxClient:
         _ = self.socket.recv(1024)
 
  
-
 def print_bytes_with_index(bytearr : bytes):
     for i in range(0, len(bytearr)):
         print(f"[{i}] - {bytearr[i]}")
 
-BASE_MESSAGE = [
-    0x02, 0x00, 0x00, 0x00, 
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x10, 0x0e, 0x00, 0x00, 
-    0x01, 0x01, 0x04, 0x46, 0x00, 0x00, 0x00, 0x00,  
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
 
+BASE_MSG = [
+    0x02,        # 00 - Type (03 is Return, 02 is Transmit)
+    0x00,        # 01 - Reserved/Unknown
+    0x00,        # 02 - Seq Number - FILL AT RUNTIME
+    0x00,        # 03 - Reserved/Unknown
+    0x00,        # 04 - Text Length - FILL AT RUNTIME ???
+    0x00,        # 05 - Reserved/Unknown
+    0x00,        # 06 - Reserved/Unknown
+    0x00,        # 07 - Reserved/Unknown
+    0x00,        # 08 - Reserved/Unknown
+    0x01,        # 09 - Reserved/Unknown*
+    0x00,        # 10 - Reserved/Unknown
+    0x00,        # 11 - Reserved/Unknown
+    0x00,        # 12 - Reserved/Unknown
+    0x00,        # 13 - Reserved/Unknown
+    0x00,        # 14 - Reserved/Unknown
+    0x00,        # 15 - Reserved/Unknown
+    0x00,        # 16 - Reserved/Unknown
+    0x01,        # 17 - Reserved/Unknown*
+    0x00,        # 18 - Reserved/Unknown
+    0x00,        # 19 - Reserved/Unknown
+    0x00,        # 20 - Reserved/Unknown
+    0x00,        # 21 - Reserved/Unknown
+    0x00,        # 22 - Reserved/Unknown
+    0x00,        # 23 - Reserved/Unknown
+    0x00,        # 24 - Reserved/Unknown
+    0x00,        # 25 - Reserved/Unknown
+    0x00,        # 26 - Time Seconds - FILL AT RUNTIME
+    0x00,        # 27 - Time Minutes - FILL AT RUNTIME
+    0x00,        # 28 - Time Hours   - FILL AT RUNTIME
+    0x00,        # 29 - Reserved/Unknown
+    0x00,        # 30 - Size ?????
+    0xc0,        # 31 - Message Type
+    0x00,        # 32 - Mailbox Source
+    0x00,        # 33 - Mailbox Source
+    0x00,        # 34 - Mailbox Source
+    0x00,        # 35 - Mailbox Source
+    0x10,        # 36 - Mailbox Destination
+    0x0e,        # 37 - Mailbox Destination
+    0x00,        # 38 - Mailbox Destination
+    0x00,        # 39 - Mailbox Destination
+    0x01,        # 40 - Packet Number
+    0x01,        # 41 - Total Packet Number
+    0x04,        # 42 - Service Request Code - (Operation Type SERVICE_REQUEST_CODE)
+    0x46,        # 43 - Request Dependent Space (For Reading: set MEMORY_TYPE_CODE)
+    0x00,        # 44 - Request Dependent Space (For Reading: set to Address - 1)(LSB)
+    0x00,        # 45 - Request Dependent Space (For Reading: set to Address - 1)(MSB)
+    0x00,        # 46 - Request Dependent Space (For Reading: Data Size Bytes)(LSB)
+    0x00,        # 47 - Request Dependent Space (For Reading: Data Size Bytes)(MSB)
+    0x00,        # 48 - Reserved/Unknown
+    0x00,        # 49 - Reserved/Unknown
+    0x00,        # 50 - Reserved/Unknown
+    0x00,        # 51 - Reserved/Unknown
+    0x00,        # 52 - Reserved/Unknown
+    0x00,        # 53 - Reserved/Unknown
+    0x00,        # 54 - Reserved/Unknown
+    0x00         # 55 - Reserved/Unknown
 ]
+
+# --- TODO keeping for future implementation. Would make it easier to build commands  ---
+# --- TODO should change these to a dataclass instead of a dict. Would make it easier to use ---
+SERVICE_REQUEST_CODE = {
+    "PLC_STATUS"             : b'\x00',
+    "RETURN_PROG_NAME"       : b'\x03',
+    "READ_SYS_MEMORY"        : b'\x04',    # Used to read general memory register (Example: %R12344)
+    "READ_TASK_MEMORY"       : b'\x05',
+    "READ_PROG_MEMORY"       : b'\x06',
+    "WRITE_SYS_MEMORY"       : b'\x07',
+    "WRITE_TASK_MEMORY"      : b'\x08',
+    "WRITE_PROG_MEMORY"      : b'\x09',
+    "RETURN_DATETIME"        : b'\x25',
+    "RETURN_CONTROLLER_TYPE" : b'\x43'
+}
+
+
+# Used at byte locaiton 43
+MEMORY_TYPE_CODE = {
+    "R"  :   b'\x08',    # Register (Word)
+    "AI" :   b'\x0a',    # Analog Input (Word)
+    "AQ" :   b'\x0c',    # Analog Output (Word)
+    "I"  :   b'\x10',    # Descrete Input (Byte)
+    "Q"  :   b'\x12',    # Descrete Output (Byte)
+}
+
