@@ -357,7 +357,8 @@ class SnpxClient:
         ])
 
         # adjust for int assignments
-        if var_type == VariableTypes.INT: packet[4] = 0x1C
+        #if var_type == VariableTypes.INT: packet[4] = 0x1C
+        packet[4] = len(command_string)
 
         # Insert Payload Length at index 46-47 (Little Endian)
         packet[54] = payload_len & 0xFF
@@ -380,7 +381,7 @@ class SnpxClient:
         response = self.socket.recv(1024)
         return response
 
-    def read_sys_var(self, var_name: str, var_type: FanucVariable = VariableTypes.REAL):
+    def read_sys_var(self, var_name: str, var_type: FanucVariable):
         """
         Read system variable by first assigning it to an %R register, then reading the register.
         
@@ -428,7 +429,7 @@ class SnpxClient:
         # 3. Send the packet and receive the response
         self.socket.send(bytearray(command))
         payload = SnpxClient._recv_snpx_packet(self.socket)
-        #print_bytes_with_index(payload)
+        print_bytes_with_index(payload)
 
         # Extract data payload
         data_start = 44
@@ -465,15 +466,90 @@ class SnpxClient:
 
         return value
         
-    def write_sys_var(self, var_name, var_type = FanucVariable):
+    def write_sys_var(self, var_name: str, var_type: FanucVariable, value):
         """
-        Write a value to a system variable
+        Write system variable by first assigning it to an %R register, then writing to the register.
         
-        :param var_name: name of variable, usually starts with "$"
-        :param var_type: Type of variable, usually from VariableTypes
+        :param var_name: Name of variable, usually starts with "$"
+        :param var_type: Type of variable, must be one of VariableTypes
+        :returns: The decoded value (float, int, or str)
         """
 
-        pass # TODO - WRITE SYSTEM VARS 
+        # 1. Make sure variable is assigned in robot (and retrieve the assignment number/type info)
+        self.set_asg(var_name=var_name, var_type=var_type)
+        
+        var_info = self._sys_vars.get(var_name)
+        if var_info is None:
+             raise Exception(f"Failed to assign variable {var_name}")
+
+        asg_num = var_info["index"]
+        size = var_info["size"] # Number of registers (words) to read
+        multiply = var_info["multiply"]
+        
+        # %R register address is 0-based word address. For %R1, the address is 0 (0x0000).
+        start_word_address = asg_num - 1
+        
+        # 2. Construct the Read Request packet
+        command = BASE_MESSAGE.copy()
+
+        # Update word count (bytes 2-3 and 30-31)
+        count = size * 2 # Number of 16-bit words (registers)
+        
+        command[2] = count & 0xFF
+        command[3] = (count >> 8) & 0xFF
+        command[30] = count & 0xFF 
+        command[31] = 0xC0 # Command code for Read/Write
+
+        # Update Read Command fields (bytes 42-47)
+        command[42] = 0x07 # Command: Read (0x04)
+        command[43] = 0x08 # Memory Area: %R (Register)
+        command[44] = start_word_address & 0xFF
+        command[45] = (start_word_address >> 8) & 0xFF
+        
+        # Length of data in bytes (size * 2 bytes/word)
+        payload_len = size #* 2 #int(size / 2)
+        command[46] = payload_len & 0xFF
+        command[47] = (payload_len >> 8) & 0xFF
+        
+        # determine how many bytes the variable occupies (size is in 16-bit words)
+        byte_len = var_type.size * 2
+
+        # build payload bytes (little-endian to match your read logic)
+        if var_type == VariableTypes.REAL:
+            # 32-bit IEEE float
+            payload = struct.pack('<f', float(value))
+        elif var_type == VariableTypes.INT:
+            # apply multiply scaling if used when reading (inverse for writing)
+            if var_type.multiply and var_type.multiply != 0:
+                raw = int(value * var_type.multiply)
+            else:
+                raw = int(value)
+            payload = struct.pack('<i', raw)    # 4-byte signed int little-endian
+        elif var_type == VariableTypes.STRING:
+            payload = str(value).encode('ascii', errors='replace')[:byte_len]
+            if len(payload) < byte_len:
+                payload = payload + b'\x00' * (byte_len - len(payload))
+        else:
+            raise ValueError("Unsupported variable type for write")
+
+        # ensure payload is exactly byte_len
+        if len(payload) < byte_len:
+            payload = payload + b'\x00' * (byte_len - len(payload))
+        elif len(payload) > byte_len:
+            payload = payload[:byte_len]
+
+        # Place payload into command starting at byte index 48 (one byte per entry)
+        # command is a list of ints so iterating payload (bytes) yields ints 0-255
+        for i, b in enumerate(payload):
+            command[48 + i] = b
+
+        # 3. Send the packet and receive the response
+        self.socket.sendall(bytearray(command))
+
+        # Cleanup socket
+        _ = self.socket.recv(1024)
+
+ 
 
 def print_bytes_with_index(bytearr : bytes):
     for i in range(0, len(bytearr)):
