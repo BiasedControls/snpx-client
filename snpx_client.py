@@ -111,7 +111,8 @@ class DigitalSignal:
         command[2] = count & 0xFF
         command[3] = (count >> 8) & 0xFF
         command[30] = count & 0xFF
-        command[42], command[43] = ServiceReqCode.WRITE_SYS_MEMORY, self.code
+        command[42] = ServiceReqCode.WRITE_SYS_MEMORY
+        command[43] = self.code
         command[44] = start_index & 0xFF
         command[45] = (start_index >> 8) & 0xFF
 
@@ -165,7 +166,7 @@ class PositionData:
         command = BASE_MSG.copy()
         command[2] = 0x04
         command[30] = 0x04 
-        command[43] = 0x08 # memory type code
+        command[43] = MemTypeCode.R # memory type code
         command[46] = 0x32 # size in bytes
 
         # Request Joints
