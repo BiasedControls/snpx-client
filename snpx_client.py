@@ -111,7 +111,7 @@ class DigitalSignal:
         command[2] = count & 0xFF
         command[3] = (count >> 8) & 0xFF
         command[30] = count & 0xFF
-        command[42], command[43] = 0x07, self.code
+        command[42], command[43] = ServiceReqCode.WRITE_SYS_MEMORY, self.code
         command[44] = start_index & 0xFF
         command[45] = (start_index >> 8) & 0xFF
 
@@ -202,12 +202,12 @@ class SnpxClient:
         """
         Initialize signal / memory objects. This is required every time the socket is modified
         """
-        self.di = DigitalSignal(socket=self.socket, code=0x48, address=0)
-        self.do = DigitalSignal(socket=self.socket, code=0x46, address=0)
-        self.ui = DigitalSignal(socket=self.socket, code=0x48, address=6000)
-        self.uo = DigitalSignal(socket=self.socket, code=0x46, address=6000)
-        self.so = DigitalSignal(socket=self.socket, code=0x46, address=7000) # SOP output
-        self.si = DigitalSignal(socket=self.socket, code=0x48, address=7000) # SOP input
+        self.di = DigitalSignal(socket=self.socket, code=MemTypeCode.I, address=0)
+        self.do = DigitalSignal(socket=self.socket, code=MemTypeCode.Q, address=0)
+        self.ui = DigitalSignal(socket=self.socket, code=MemTypeCode.I, address=6000)
+        self.uo = DigitalSignal(socket=self.socket, code=MemTypeCode.Q, address=6000)
+        self.si = DigitalSignal(socket=self.socket, code=MemTypeCode.I, address=7000) # SOP input
+        self.so = DigitalSignal(socket=self.socket, code=MemTypeCode.Q, address=7000) # SOP output
         self.cart_pos = PositionData(socket=self.socket, code=0x08, address=12000)
         self.j_pos = PositionData(socket=self.socket, code=0x08, address=12026)
         
@@ -365,7 +365,7 @@ class SnpxClient:
         command[17] = 0x00
         command[30] = 0x03
         command[31] = 0x80
-        command[42] = 0x00
+        command[42] = ServiceReqCode.PLC_STATUS
         command[43] = 0x00
         command[48] = 0x01
         command[49] = 0x01
@@ -425,8 +425,8 @@ class SnpxClient:
         command[30] = count & 0xFF 
 
         # Update Read Command fields (bytes 42-47)
-        command[42] = 0x04 # Command: Read (0x04)
-        command[43] = 0x08 # Memory Area: %R (Register)
+        command[42] = ServiceReqCode.READ_SYS_MEMORY # (0x04)
+        command[43] = MemTypeCode.R # Memory Area: %R (Register)
         command[44] = start_word_address & 0xFF
         command[45] = (start_word_address >> 8) & 0xFF
         
@@ -509,8 +509,8 @@ class SnpxClient:
         command[30] = count & 0xFF 
 
         # Update Read Command fields (bytes 42-47)
-        command[42] = 0x07 # Command: Read (0x04)
-        command[43] = 0x08 # Memory Area: %R (Register)
+        command[42] = ServiceReqCode.WRITE_SYS_MEMORY
+        command[43] = MemTypeCode.R 
         command[44] = start_word_address & 0xFF
         command[45] = (start_word_address >> 8) & 0xFF
         
@@ -622,28 +622,26 @@ BASE_MSG = [
     0x00         # 55 - Reserved/Unknown
 ]
 
-# --- TODO keeping for future implementation. Would make it easier to build commands  ---
-# --- TODO should change these to a dataclass instead of a dict. Would make it easier to use ---
-SERVICE_REQUEST_CODE = {
-    "PLC_STATUS"             : b'\x00',
-    "RETURN_PROG_NAME"       : b'\x03',
-    "READ_SYS_MEMORY"        : b'\x04',    # Used to read general memory register (Example: %R12344)
-    "READ_TASK_MEMORY"       : b'\x05',
-    "READ_PROG_MEMORY"       : b'\x06',
-    "WRITE_SYS_MEMORY"       : b'\x07',
-    "WRITE_TASK_MEMORY"      : b'\x08',
-    "WRITE_PROG_MEMORY"      : b'\x09',
-    "RETURN_DATETIME"        : b'\x25',
-    "RETURN_CONTROLLER_TYPE" : b'\x43'
-}
+# Used at byte location 42
+class ServiceReqCode:
+    PLC_STATUS             = 0x00
+    RETURN_PROG_NAME       = 0x03
+    READ_SYS_MEMORY        = 0x04     # Used to read general memory register (Example: %R12344)
+    READ_TASK_MEMORY       = 0x05
+    READ_PROG_MEMORY       = 0x06
+    WRITE_SYS_MEMORY       = 0x07
+    WRITE_TASK_MEMORY      = 0x08
+    WRITE_PROG_MEMORY      = 0x09
+    RETURN_DATETIME        = 0x25
+    RETURN_CONTROLLER_TYPE = 0x43
 
 
-# Used at byte locaiton 43
-MEMORY_TYPE_CODE = {
-    "R"  :   b'\x08',    # Register (Word)
-    "AI" :   b'\x0a',    # Analog Input (Word)
-    "AQ" :   b'\x0c',    # Analog Output (Word)
-    "I"  :   b'\x10',    # Descrete Input (Byte)
-    "Q"  :   b'\x12',    # Descrete Output (Byte)
-}
+# Used at byte location 43
+class MemTypeCode:
+    R  = 0x08    # Register (Word)
+    AI = 0x0a    # Analog Input (Word)
+    AQ = 0x0c    # Analog Output (Word)
+    I  = 0x48    # Descrete Input (Byte)
+    Q  = 0x46    # Descrete Output (Byte)
+
 
